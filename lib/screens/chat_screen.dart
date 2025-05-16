@@ -4,6 +4,7 @@ import 'package:flash_chat/constants.dart';
 import 'package:flutter/material.dart';
 
 final _firestore = FirebaseFirestore.instance;
+User? loggedInUser;
 
 class ChatScreen extends StatefulWidget {
   static const String id = 'chat_screen';
@@ -15,7 +16,8 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final messageTextController = TextEditingController();
   final _auth = FirebaseAuth.instance;
-  User? loggedInUser;
+  final ScrollController _scrollController = ScrollController();
+
   String messageText = "";
 
   @override
@@ -35,12 +37,14 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void messagesStream() async {
-    _firestore.collection('messages').snapshots().listen((event) {
-      for (var message in event.docs) {
-        print(message.data());
-      }
-    });
+  void scrollToBottom() {
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    }
   }
 
   @override
@@ -52,9 +56,8 @@ class _ChatScreenState extends State<ChatScreen> {
           IconButton(
             icon: Icon(Icons.close),
             onPressed: () {
-              messagesStream();
-              // _auth.signOut();
-              // Navigator.pop(context);
+              _auth.signOut();
+              Navigator.pop(context);
             },
           ),
         ],
@@ -66,7 +69,12 @@ class _ChatScreenState extends State<ChatScreen> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Expanded(child: MessageStream()),
+            Expanded(
+              child: MessageStream(
+                scrollController: _scrollController,
+                scrollToBottom: scrollToBottom,
+              ),
+            ),
             Container(
               decoration: kMessageContainerDecoration,
               child: Row(
@@ -83,12 +91,13 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                   TextButton(
                     onPressed: () {
-                      messageTextController.clear();
                       if (messageText.trim().isNotEmpty) {
                         _firestore.collection('messages').add({
                           'text': messageText,
                           'sender': loggedInUser?.email,
+                          'timestamp': FieldValue.serverTimestamp(),
                         });
+                        messageTextController.clear();
                         messageText = '';
                       }
                     },
@@ -105,28 +114,55 @@ class _ChatScreenState extends State<ChatScreen> {
 }
 
 class MessageStream extends StatelessWidget {
-  const MessageStream({super.key});
+  final ScrollController scrollController;
+  final Function scrollToBottom;
+
+  const MessageStream({
+    super.key,
+    required this.scrollController,
+    required this.scrollToBottom,
+  });
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot>(
       stream: _firestore.collection('messages').snapshots(),
       builder: (context, snapshot) {
-        final data = snapshot.data;
-        if (snapshot.hasData && data != null) {
-          final messages = data.docs;
+        if (snapshot.hasData) {
+          final messages = snapshot.data!.docs;
+
+          // Manual sort with null safety
+          messages.sort((a, b) {
+            final aTimestamp = (a.data() as Map<String, dynamic>)['timestamp'];
+            final bTimestamp = (b.data() as Map<String, dynamic>)['timestamp'];
+
+            if (aTimestamp == null && bTimestamp == null) return 0;
+            if (aTimestamp == null) return -1;
+            if (bTimestamp == null) return 1;
+
+            return (aTimestamp as Timestamp).compareTo(bTimestamp as Timestamp);
+          });
+
           List<MessageBubble> messageBubbles = [];
           for (var message in messages) {
-            final messageText = message['text'];
-            final messageSender = message['sender'];
+            final messageData = message.data() as Map<String, dynamic>;
+            final messageText = messageData['text'] ?? '';
+            final messageSender = messageData['sender'] ?? 'Unknown';
+            final currentUser = loggedInUser?.email;
 
             final messageBubble = MessageBubble(
               messageText: messageText,
               messageSender: messageSender,
+              isMe: currentUser == messageSender,
             );
             messageBubbles.add(messageBubble);
           }
+
+          // Scroll to bottom after frame build
+          WidgetsBinding.instance.addPostFrameCallback((_) => scrollToBottom());
+
           return ListView(
+            controller: scrollController,
             padding: EdgeInsets.symmetric(horizontal: 10, vertical: 20),
             children: messageBubbles,
           );
@@ -143,17 +179,20 @@ class MessageBubble extends StatelessWidget {
     super.key,
     required this.messageText,
     required this.messageSender,
+    required this.isMe,
   });
 
   final String messageText;
   final String messageSender;
+  final bool isMe;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.all(10.0),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.end,
+        crossAxisAlignment:
+            isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         children: [
           Text(
             messageSender,
@@ -161,19 +200,32 @@ class MessageBubble extends StatelessWidget {
           ),
           Material(
             elevation: 5,
-            borderRadius: BorderRadius.circular(30),
-            color: Colors.lightBlueAccent,
+            borderRadius:
+                isMe
+                    ? BorderRadius.only(
+                      topLeft: Radius.circular(30),
+                      bottomLeft: Radius.circular(30),
+                      bottomRight: Radius.circular(30),
+                    )
+                    : BorderRadius.only(
+                      topRight: Radius.circular(30),
+                      bottomLeft: Radius.circular(30),
+                      bottomRight: Radius.circular(30),
+                    ),
+            color: isMe ? Colors.lightBlueAccent : Colors.white,
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 20),
               child: Text(
                 messageText,
-                style: TextStyle(fontSize: 15, color: Colors.white),
+                style: TextStyle(
+                  fontSize: 15,
+                  color: isMe ? Colors.white : Colors.black54,
+                ),
               ),
             ),
           ),
         ],
       ),
     );
-    ;
   }
 }
